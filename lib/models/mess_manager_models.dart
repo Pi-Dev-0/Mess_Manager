@@ -23,17 +23,21 @@ class Member {
 class Meal {
   final String memberId;
   double count;
+  final DateTime date;
 
-  Meal({required this.memberId, required this.count});
+  Meal({required this.memberId, required this.count, DateTime? date})
+      : date = date ?? DateTime.now();
 
   Map<String, dynamic> toMap() => {
         'memberId': memberId,
         'count': count,
+        'date': date.toIso8601String(),
       };
 
   factory Meal.fromMap(Map<String, dynamic> map) => Meal(
         memberId: map['memberId'] as String,
         count: (map['count'] as num).toDouble(),
+        date: DateTime.tryParse(map['date'] as String? ?? '') ?? DateTime.now(),
       );
 }
 

@@ -53,12 +53,16 @@ class _MessManagerPageState extends State<MessManagerPage> {
   String _myMemberId = '';
   String _managerPassword = '';
   bool _isManager = false;
+  DateTime? _firstLaunchDate;
+  bool _isMealPopupActive = false;
 
   // Controllers
   final TextEditingController _expenseAmountController =
       TextEditingController();
   final TextEditingController _expenseDescriptionController =
       TextEditingController();
+  final Map<String, TextEditingController> _memberMealControllers = {};
+  final Map<String, bool> _memberMealEditModes = {};
 
   // Getters
 
@@ -100,6 +104,7 @@ class _MessManagerPageState extends State<MessManagerPage> {
   static const String _kMyMemberId = 'mm_my_member_id';
   static const String _kManagerPassword = 'mm_manager_password';
   static const String _kSetupCompleted = 'mm_setup_completed';
+  static const String _kFirstLaunchDate = 'mm_first_launch_date';
 
   // External sync endpoint
   String _appsScriptUrl = '';
@@ -108,7 +113,9 @@ class _MessManagerPageState extends State<MessManagerPage> {
   void initState() {
     super.initState();
     _loadState().then((_) {
-      _checkSetup();
+      _checkSetup().then((_) {
+        _checkDailyUpdates();
+      });
     });
   }
 
@@ -118,6 +125,261 @@ class _MessManagerPageState extends State<MessManagerPage> {
     if (oldWidget.key != widget.key) {
       _loadState();
     }
+  }
+
+  Future<void> _checkDailyUpdates() async {
+    if (_members.isEmpty || _isMealPopupActive) return;
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    
+    // We only care about dates starting from _firstLaunchDate
+    if (_firstLaunchDate == null) return;
+    
+    DateTime startCheck = DateTime(_firstLaunchDate!.year, _firstLaunchDate!.month, _firstLaunchDate!.day);
+    
+    // Find all missing dates from startCheck to yesterday
+    List<DateTime> missing = [];
+    DateTime current = startCheck;
+    
+    while (current.isBefore(today)) {
+      final hasData = _meals.any((m) =>
+          m.date.year == current.year &&
+          m.date.month == current.month &&
+          m.date.day == current.day);
+      
+      if (!hasData) {
+        missing.add(current);
+      }
+      current = current.add(const Duration(days: 1));
+    }
+
+    if (missing.isNotEmpty) {
+      setState(() => _isMealPopupActive = true);
+      for (var date in missing) {
+        if (!mounted) break;
+        await _showDailyMealUpdateDialog(date, mandatory: true);
+      }
+      if (mounted) setState(() => _isMealPopupActive = false);
+    }
+  }
+
+  Future<void> _showDailyMealUpdateDialog(DateTime date,
+      {bool mandatory = false}) async {
+    final Map<String, double> confirmedMeals = {};
+    final Map<String, TextEditingController> controllers = {};
+    final Map<String, bool> editModes = {};
+
+    for (var m in _members) {
+      final existing = _meals.where((meal) =>
+          meal.memberId == m.id &&
+          meal.date.year == date.year &&
+          meal.date.month == date.month &&
+          meal.date.day == date.day);
+
+      final val = existing.isEmpty ? 0.0 : existing.first.count;
+      confirmedMeals[m.id] = val;
+      controllers[m.id] = TextEditingController(text: val.toStringAsFixed(1));
+      editModes[m.id] = false;
+    }
+
+    final dateStr = DateFormat('dd MMMM, yyyy').format(date);
+
+    await showDialog(
+      context: context,
+      barrierDismissible: !mandatory,
+      builder: (context) {
+        return StatefulBuilder(builder: (context, setDialogState) {
+          return PopScope(
+            canPop: !mandatory,
+            child: AlertDialog(
+              title: Text('$dateStr এর মিল আপডেট'),
+              content: SizedBox(
+                width: MediaQuery.of(context).size.width * 0.95,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (mandatory)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Text(
+                            'অ্যাপ ব্যবহার করতে এই দিনের মিল আপডেট করুন।',
+                            style: TextStyle(
+                                color: Colors.red.shade700, fontSize: 13),
+                          ),
+                        ),
+                      ..._members.map((member) {
+                        final currentText = controllers[member.id]!.text;
+                        final currentVal =
+                            double.tryParse(currentText) ?? confirmedMeals[member.id]!;
+                        final isChanged =
+                            (currentVal - confirmedMeals[member.id]!).abs() > 0.01;
+
+                        return ListTile(
+                          title: Text(member.name, 
+                              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                          subtitle: isChanged 
+                              ? const Text('নিশ্চিত করুন ➔', 
+                                  style: TextStyle(color: Colors.orange, fontSize: 12, fontWeight: FontWeight.bold)) 
+                              : (editModes[member.id]! ? const Text('এডিট মোড', style: TextStyle(fontSize: 10)) : null),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.remove_circle, size: 24, color: Colors.redAccent),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () {
+                                  setDialogState(() {
+                                    double val = (double.tryParse(controllers[member.id]!.text) ?? 0.0) - 0.5;
+                                    controllers[member.id]!.text = val.clamp(0.0, 30.0).toStringAsFixed(1);
+                                  });
+                                },
+                              ),
+                              const SizedBox(width: 8),
+                              GestureDetector(
+                                onDoubleTap: () {
+                                  setDialogState(() {
+                                    editModes[member.id] = true;
+                                  });
+                                },
+                                child: SizedBox(
+                                  width: 50,
+                                  child: editModes[member.id]!
+                                      ? TextField(
+                                          controller: controllers[member.id],
+                                          autofocus: true,
+                                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                          decoration: const InputDecoration(
+                                            isDense: true,
+                                            contentPadding: EdgeInsets.symmetric(vertical: 4),
+                                            border: OutlineInputBorder(),
+                                          ),
+                                          onSubmitted: (_) {
+                                            setDialogState(() {
+                                              editModes[member.id] = false;
+                                            });
+                                          },
+                                          onChanged: (_) => setDialogState(() {}),
+                                        )
+                                      : Container(
+                                          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                                          decoration: BoxDecoration(
+                                            border: Border.all(color: Colors.grey.shade300),
+                                            borderRadius: BorderRadius.circular(4),
+                                            color: Colors.grey.shade50,
+                                          ),
+                                          child: Text(
+                                            controllers[member.id]!.text,
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+                                          ),
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              IconButton(
+                                icon: const Icon(Icons.add_circle, size: 24, color: Colors.green),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () {
+                                  setDialogState(() {
+                                    double val = (double.tryParse(controllers[member.id]!.text) ?? 0.0) + 0.5;
+                                    controllers[member.id]!.text = val.clamp(0.0, 30.0).toStringAsFixed(1);
+                                  });
+                                },
+                              ),
+                              const SizedBox(width: 8),
+                              // Confirmation Tick Button
+                              if (isChanged)
+                                IconButton(
+                                  icon: const Icon(Icons.check_circle, color: Colors.green, size: 32),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                  onPressed: () {
+                                    final newVal = double.tryParse(controllers[member.id]!.text);
+                                    if (newVal != null) {
+                                      setDialogState(() {
+                                        confirmedMeals[member.id] = newVal;
+                                        controllers[member.id]!.text = newVal.toStringAsFixed(1);
+                                        editModes[member.id] = false;
+                                      });
+                                    }
+                                  },
+                                )
+                              else
+                                const SizedBox(width: 32),
+                            ],
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                if (!mandatory)
+                  TextButton(
+                    onPressed: () {
+                      for (var c in controllers.values) {
+                        c.dispose();
+                      }
+                      Navigator.pop(context);
+                    },
+                    child: const Text('বন্ধ করুন'),
+                  ),
+                ElevatedButton(
+                  onPressed: () {
+                    // Check for unconfirmed changes
+                    bool hasUnconfirmed = false;
+                    for (var member in _members) {
+                      final currentText = controllers[member.id]!.text;
+                      final currentVal =
+                          double.tryParse(currentText) ?? confirmedMeals[member.id]!;
+                      if ((currentVal - confirmedMeals[member.id]!).abs() > 0.01) {
+                        hasUnconfirmed = true;
+                        break;
+                      }
+                    }
+
+                    if (hasUnconfirmed) {
+                      _showSnackBar(
+                          'দয়া করে প্রতিটি পরিবর্তন সেভ করার আগে টিক চিহ্ন ক্লিক করে নিশ্চিত করুন।',
+                          Colors.orange);
+                      return;
+                    }
+
+                    setState(() {
+                      for (var entry in confirmedMeals.entries) {
+                        _meals.removeWhere((m) =>
+                            m.memberId == entry.key &&
+                            m.date.year == date.year &&
+                            m.date.month == date.month &&
+                            m.date.day == date.day);
+                        _meals.add(Meal(
+                            memberId: entry.key,
+                            count: entry.value,
+                            date: date));
+                      }
+                    });
+                    _saveState();
+                    for (var c in controllers.values) {
+                      c.dispose();
+                    }
+                    Navigator.pop(context);
+                  },
+                  child: const Text('সবগুলো সেভ করুন'),
+                ),
+              ],
+            ),
+          );
+        });
+      },
+    );
   }
 
   Future<void> _checkSetup() async {
@@ -416,6 +678,10 @@ class _MessManagerPageState extends State<MessManagerPage> {
       await prefs.setString(_kMyMemberId, _myMemberId);
       await prefs.setString(_kManagerPassword, _managerPassword);
       await prefs.setString(_kAppsScriptUrl, _appsScriptUrl);
+      if (_firstLaunchDate != null) {
+        await prefs.setString(
+            _kFirstLaunchDate, _firstLaunchDate!.toIso8601String());
+      }
     } catch (e) {
       // Non-fatal: ignore save errors but log via snackbar once
     }
@@ -491,6 +757,15 @@ class _MessManagerPageState extends State<MessManagerPage> {
       _isManager = prefs.getBool(_kIsManager) ?? false;
       _myMemberId = prefs.getString(_kMyMemberId) ?? '';
       _managerPassword = prefs.getString(_kManagerPassword) ?? '';
+
+      final firstLaunchStr = prefs.getString(_kFirstLaunchDate);
+      if (firstLaunchStr != null) {
+        _firstLaunchDate = DateTime.tryParse(firstLaunchStr);
+      } else {
+        _firstLaunchDate = DateTime.now();
+        await prefs.setString(
+            _kFirstLaunchDate, _firstLaunchDate!.toIso8601String());
+      }
 
       if (mounted) setState(() {});
     } catch (e) {
@@ -1224,9 +1499,8 @@ class _MessManagerPageState extends State<MessManagerPage> {
   List<ReportData> get _reportData {
     return _members.map((member) {
       final memberMeals = _meals
-          .firstWhere((m) => m.memberId == member.id,
-              orElse: () => Meal(memberId: member.id, count: 0.0))
-          .count;
+          .where((m) => m.memberId == member.id)
+          .fold(0.0, (sum, m) => sum + m.count);
       final memberDeposit = member.initialDeposit;
       final personalExpense = _memberExpenses
           .where((e) => e.memberId == member.id)
@@ -1610,10 +1884,8 @@ class _MessManagerPageState extends State<MessManagerPage> {
                     else
                       ..._members.map((member) {
                         final memberMeals = _meals
-                            .firstWhere((m) => m.memberId == member.id,
-                                orElse: () =>
-                                    Meal(memberId: member.id, count: 0.0))
-                            .count;
+                            .where((m) => m.memberId == member.id)
+                            .fold(0.0, (sum, m) => sum + m.count);
                         return Container(
                           margin: const EdgeInsets.only(bottom: 10),
                           padding: const EdgeInsets.all(12),
@@ -1714,73 +1986,111 @@ class _MessManagerPageState extends State<MessManagerPage> {
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 4, vertical: 4),
+                                    horizontal: 2, vertical: 2),
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     if (_isManager)
                                       IconButton(
-                                        icon: const Icon(Icons.remove),
+                                        icon: const Icon(Icons.remove_circle, color: Colors.redAccent, size: 22),
                                         visualDensity: VisualDensity.compact,
                                         padding: EdgeInsets.zero,
                                         constraints:
                                             const BoxConstraints.tightFor(
-                                                width: 32, height: 32),
+                                                width: 28, height: 28),
                                         onPressed: () {
                                           setState(() {
-                                            double newCount = memberMeals - 0.5;
-                                            if (newCount < 0) newCount = 0.0;
-                                            final idx = _meals.indexWhere(
-                                                (m) => m.memberId == member.id);
-                                            if (idx != -1) {
-                                              _meals[idx].count = newCount;
-                                            } else {
-                                              _meals.add(Meal(
-                                                  memberId: member.id,
-                                                  count: newCount));
-                                            }
+                                            double current = double.tryParse(_memberMealControllers[member.id]?.text ?? '') ?? memberMeals;
+                                            double newCount = (current - 0.5).clamp(0.0, 999.0);
+                                            _memberMealControllers.putIfAbsent(member.id, () => TextEditingController());
+                                            _memberMealControllers[member.id]!.text = newCount.toStringAsFixed(1);
                                           });
-                                          _saveState();
                                         },
                                       ),
-                                    SizedBox(
-                                      width: 48,
-                                      child: Center(
-                                        child: Text(
-                                          memberMeals.toStringAsFixed(1),
-                                          style: const TextStyle(
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.deepPurple),
-                                        ),
+                                    GestureDetector(
+                                      onDoubleTap: _isManager ? () {
+                                        setState(() {
+                                          _memberMealEditModes[member.id] = true;
+                                          _memberMealControllers.putIfAbsent(member.id, () => TextEditingController(text: memberMeals.toStringAsFixed(1)));
+                                        });
+                                      } : null,
+                                      child: SizedBox(
+                                        width: 44,
+                                        child: (_memberMealEditModes[member.id] ?? false)
+                                            ? TextField(
+                                                controller: _memberMealControllers[member.id],
+                                                autofocus: true,
+                                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                                textAlign: TextAlign.center,
+                                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                                decoration: const InputDecoration(
+                                                  isDense: true,
+                                                  contentPadding: EdgeInsets.symmetric(vertical: 4),
+                                                  border: UnderlineInputBorder(),
+                                                ),
+                                                onSubmitted: (_) {
+                                                  setState(() {
+                                                    _memberMealEditModes[member.id] = false;
+                                                  });
+                                                },
+                                              )
+                                            : Center(
+                                                child: Text(
+                                                  (_memberMealControllers[member.id]?.text ?? memberMeals.toStringAsFixed(1)),
+                                                  style: const TextStyle(
+                                                      fontSize: 16,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: Colors.deepPurple),
+                                                ),
+                                              ),
                                       ),
                                     ),
                                     if (_isManager) ...[
-                                      const SizedBox(width: 4),
                                       IconButton(
-                                        icon: const Icon(Icons.add),
+                                        icon: const Icon(Icons.add_circle, color: Colors.green, size: 22),
                                         visualDensity: VisualDensity.compact,
                                         padding: EdgeInsets.zero,
                                         constraints:
                                             const BoxConstraints.tightFor(
-                                                width: 32, height: 32),
+                                                width: 28, height: 28),
                                         onPressed: () {
                                           setState(() {
-                                            final double newCount =
-                                                memberMeals + 0.5;
-                                            final idx = _meals.indexWhere(
-                                                (m) => m.memberId == member.id);
-                                            if (idx != -1) {
-                                              _meals[idx].count = newCount;
-                                            } else {
-                                              _meals.add(Meal(
-                                                  memberId: member.id,
-                                                  count: newCount));
-                                            }
+                                            double current = double.tryParse(_memberMealControllers[member.id]?.text ?? '') ?? memberMeals;
+                                            double newCount = current + 0.5;
+                                            _memberMealControllers.putIfAbsent(member.id, () => TextEditingController());
+                                            _memberMealControllers[member.id]!.text = newCount.toStringAsFixed(1);
                                           });
-                                          _saveState();
                                         },
                                       ),
+                                      const SizedBox(width: 2),
+                                      Builder(builder: (context) {
+                                        final currentText = _memberMealControllers[member.id]?.text ?? memberMeals.toStringAsFixed(1);
+                                        final currentVal = double.tryParse(currentText) ?? memberMeals;
+                                        final isChanged = (currentVal - memberMeals).abs() > 0.01;
+                                        
+                                        if (isChanged) {
+                                          return IconButton(
+                                            icon: const Icon(Icons.check_circle, color: Colors.green, size: 26),
+                                            visualDensity: VisualDensity.compact,
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+                                            onPressed: () {
+                                              setState(() {
+                                                final idx = _meals.indexWhere((m) => m.memberId == member.id);
+                                                if (idx != -1) {
+                                                  _meals[idx].count = currentVal;
+                                                } else {
+                                                  _meals.add(Meal(memberId: member.id, count: currentVal));
+                                                }
+                                                _memberMealEditModes[member.id] = false;
+                                              });
+                                              _saveState();
+                                              _showSnackBar('${member.name}-এর মিল সেভ করা হয়েছে।', Colors.green);
+                                            },
+                                          );
+                                        }
+                                        return const SizedBox(width: 0);
+                                      }),
                                     ],
                                   ],
                                 ),
