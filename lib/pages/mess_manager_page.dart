@@ -603,16 +603,23 @@ class _MessManagerPageState extends State<MessManagerPage> {
 
   Future<void> _syncToGoogleSheets() async {
     try {
-      if (_appsScriptUrl.isEmpty) {
+      if (_appsScriptUrl.isEmpty || _managerPassword.isEmpty) {
         final prefs = await SharedPreferences.getInstance();
-        _appsScriptUrl = prefs.getString(_kAppsScriptUrl) ?? '';
-        if (_appsScriptUrl.isEmpty) {
+        _appsScriptUrl = prefs.getString(_kAppsScriptUrl) ?? _appsScriptUrl;
+        _managerPassword = prefs.getString(_kManagerPassword) ?? _managerPassword;
+        if (_appsScriptUrl.isEmpty || _managerPassword.isEmpty) {
           await _showWelcomeDialog(startStep: 2);
-          if (_appsScriptUrl.isEmpty) return;
+          if (_appsScriptUrl.isEmpty) {
+            return;
+          }
         }
       }
 
-      final uri = Uri.parse(_appsScriptUrl);
+      final uri = Uri.parse(_appsScriptUrl).replace(queryParameters: {
+        'action': 'sync',
+        'password': _managerPassword,
+      });
+      
       final payload = {
         'action': 'sync',
         'password': _managerPassword,
@@ -620,7 +627,8 @@ class _MessManagerPageState extends State<MessManagerPage> {
       };
 
       _showSnackBar('সিঙ্ক শুরু হচ্ছে...', Colors.blueGrey);
-      final resp = await http.post(
+      
+      final initialResp = await http.post(
         uri,
         headers: const {
           'Content-Type': 'application/json',
@@ -628,9 +636,21 @@ class _MessManagerPageState extends State<MessManagerPage> {
         body: jsonEncode(payload),
       );
 
+      
+      http.Response resp = initialResp;
+      
+      // Google Apps Script usually responds with a 302 redirect after a POST
+      if (initialResp.statusCode == 302 || initialResp.statusCode == 303) {
+        final redirectUrl = initialResp.headers['location'];
+        if (redirectUrl != null) {
+          resp = await http.get(Uri.parse(redirectUrl));
+        }
+      } else {
+      }
+
       if (!mounted) return;
 
-      if (resp.statusCode == 200) {
+      if (resp.statusCode == 200 || resp.statusCode == 201) {
         // Try to parse response JSON
         bool success = false;
         String? message;
@@ -639,8 +659,8 @@ class _MessManagerPageState extends State<MessManagerPage> {
           success = (data['success'] == true) || (data['status'] == 'ok');
           message = data['message'] as String?;
         } catch (_) {
-          // If not JSON, consider status 200 as success
-          success = true;
+          // If not JSON, consider it an error as the backend should return JSON
+          success = false;
         }
         if (success) {
           _showSnackBar(message ?? 'ডাটা সফলভাবে সিঙ্ক হয়েছে।', Colors.green);
@@ -648,7 +668,7 @@ class _MessManagerPageState extends State<MessManagerPage> {
           _showSnackBar(message ?? 'সিঙ্ক ব্যর্থ হয়েছে।', Colors.red);
         }
       } else {
-        _showSnackBar('ডাটা সফলভাবে সিঙ্ক হয়েছে।', Colors.green);
+        _showSnackBar('সার্ভার এরর: ${resp.statusCode}', Colors.red);
       }
     } catch (e) {
       _showSnackBar('সিঙ্ক করতে সমস্যা: $e', Colors.red);
