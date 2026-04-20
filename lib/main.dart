@@ -50,7 +50,7 @@ class _MessManagerHomeState extends State<MessManagerHome> {
     try {
       final notificationService = NotificationService();
       await notificationService.init();
-      await notificationService.scheduleDailyMealReminder();
+
       debugPrint('Notification Service initialized successfully');
     } catch (e) {
       debugPrint('Notification Init Error: $e');
