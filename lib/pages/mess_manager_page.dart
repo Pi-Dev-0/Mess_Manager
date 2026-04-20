@@ -115,6 +115,10 @@ class _MessManagerPageState extends State<MessManagerPage> {
     _loadState().then((_) {
       _checkSetup().then((_) {
         _checkDailyUpdates();
+        // Auto-refresh for mess members on app start
+        if (!_isManager && _appsScriptUrl.isNotEmpty) {
+          _syncFromGoogleSheets();
+        }
       });
     });
   }
@@ -386,7 +390,7 @@ class _MessManagerPageState extends State<MessManagerPage> {
     final prefs = await SharedPreferences.getInstance();
     final hasCompleted = prefs.getBool(_kSetupCompleted) ?? false;
     if (!hasCompleted) {
-      _showWelcomeDialog();
+      await _showWelcomeDialog();
     }
   }
 
@@ -441,14 +445,15 @@ class _MessManagerPageState extends State<MessManagerPage> {
                   await _showWelcomeDialog(startStep: 2);
                 },
               ),
-              ListTile(
-                leading: const Icon(Icons.refresh, color: Colors.red),
-                title: const Text('নতুন করে শুরু করুন (Start Over)'),
-                onTap: () async {
-                  Navigator.of(ctx).pop();
-                  await _startOver();
-                },
-              ),
+              if (_isManager)
+                ListTile(
+                  leading: const Icon(Icons.refresh, color: Colors.red),
+                  title: const Text('নতুন করে শুরু করুন (Start Over)'),
+                  onTap: () async {
+                    Navigator.of(ctx).pop();
+                    await _startOver();
+                  },
+                ),
               const SizedBox(height: 12),
             ],
           ),
@@ -1537,11 +1542,14 @@ class _MessManagerPageState extends State<MessManagerPage> {
             ),
           ],
         ),
-        body: SingleChildScrollView(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        body: RefreshIndicator(
+          onRefresh: _syncFromGoogleSheets,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
               if (!_isManager) ...[
                 _buildMemberSelector(),
                 const SizedBox(height: 16),
@@ -1980,19 +1988,24 @@ class _MessManagerPageState extends State<MessManagerPage> {
                                 ),
                               ],
                               Container(
-                                decoration: BoxDecoration(
-                                  border:
-                                      Border.all(color: Colors.grey.shade400),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 2, vertical: 2),
+                                decoration: _isManager
+                                    ? BoxDecoration(
+                                        border: Border.all(
+                                            color: Colors.grey.shade400),
+                                        borderRadius: BorderRadius.circular(8),
+                                      )
+                                    : null,
+                                padding: _isManager
+                                    ? const EdgeInsets.symmetric(
+                                        horizontal: 2, vertical: 2)
+                                    : EdgeInsets.zero,
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     if (_isManager)
                                       IconButton(
-                                        icon: const Icon(Icons.remove_circle, color: Colors.redAccent, size: 22),
+                                        icon: const Icon(Icons.remove_circle,
+                                            color: Colors.redAccent, size: 22),
                                         visualDensity: VisualDensity.compact,
                                         padding: EdgeInsets.zero,
                                         constraints:
@@ -2000,43 +2013,71 @@ class _MessManagerPageState extends State<MessManagerPage> {
                                                 width: 28, height: 28),
                                         onPressed: () {
                                           setState(() {
-                                            double current = double.tryParse(_memberMealControllers[member.id]?.text ?? '') ?? memberMeals;
-                                            double newCount = (current - 0.5).clamp(0.0, 999.0);
-                                            _memberMealControllers.putIfAbsent(member.id, () => TextEditingController());
-                                            _memberMealControllers[member.id]!.text = newCount.toStringAsFixed(1);
+                                            double current = double.tryParse(
+                                                    _memberMealControllers[
+                                                            member.id]
+                                                        ?.text ??
+                                                    '') ??
+                                                memberMeals;
+                                            double newCount =
+                                                (current - 0.5).clamp(0.0, 999.0);
+                                            _memberMealControllers.putIfAbsent(
+                                                member.id,
+                                                () => TextEditingController());
+                                            _memberMealControllers[member.id]!
+                                                .text = newCount.toStringAsFixed(1);
                                           });
                                         },
                                       ),
                                     GestureDetector(
-                                      onDoubleTap: _isManager ? () {
-                                        setState(() {
-                                          _memberMealEditModes[member.id] = true;
-                                          _memberMealControllers.putIfAbsent(member.id, () => TextEditingController(text: memberMeals.toStringAsFixed(1)));
-                                        });
-                                      } : null,
+                                      onDoubleTap: _isManager
+                                          ? () {
+                                              setState(() {
+                                                _memberMealEditModes[member.id] =
+                                                    true;
+                                                _memberMealControllers.putIfAbsent(
+                                                    member.id,
+                                                    () => TextEditingController(
+                                                        text: memberMeals
+                                                            .toStringAsFixed(1)));
+                                              });
+                                            }
+                                          : null,
                                       child: SizedBox(
                                         width: 44,
-                                        child: (_memberMealEditModes[member.id] ?? false)
+                                        child: (_memberMealEditModes[member.id] ??
+                                                false)
                                             ? TextField(
-                                                controller: _memberMealControllers[member.id],
+                                                controller: _memberMealControllers[
+                                                    member.id],
                                                 autofocus: true,
-                                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                                keyboardType:
+                                                    const TextInputType.numberWithOptions(
+                                                        decimal: true),
                                                 textAlign: TextAlign.center,
-                                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                                style: const TextStyle(
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 15),
                                                 decoration: const InputDecoration(
                                                   isDense: true,
-                                                  contentPadding: EdgeInsets.symmetric(vertical: 4),
+                                                  contentPadding:
+                                                      EdgeInsets.symmetric(
+                                                          vertical: 4),
                                                   border: UnderlineInputBorder(),
                                                 ),
                                                 onSubmitted: (_) {
                                                   setState(() {
-                                                    _memberMealEditModes[member.id] = false;
+                                                    _memberMealEditModes[
+                                                        member.id] = false;
                                                   });
                                                 },
                                               )
                                             : Center(
                                                 child: Text(
-                                                  (_memberMealControllers[member.id]?.text ?? memberMeals.toStringAsFixed(1)),
+                                                  (_memberMealControllers[member.id]
+                                                          ?.text ??
+                                                      memberMeals
+                                                          .toStringAsFixed(1)),
                                                   style: const TextStyle(
                                                       fontSize: 16,
                                                       fontWeight: FontWeight.bold,
@@ -2047,7 +2088,8 @@ class _MessManagerPageState extends State<MessManagerPage> {
                                     ),
                                     if (_isManager) ...[
                                       IconButton(
-                                        icon: const Icon(Icons.add_circle, color: Colors.green, size: 22),
+                                        icon: const Icon(Icons.add_circle,
+                                            color: Colors.green, size: 22),
                                         visualDensity: VisualDensity.compact,
                                         padding: EdgeInsets.zero,
                                         constraints:
@@ -2055,37 +2097,61 @@ class _MessManagerPageState extends State<MessManagerPage> {
                                                 width: 28, height: 28),
                                         onPressed: () {
                                           setState(() {
-                                            double current = double.tryParse(_memberMealControllers[member.id]?.text ?? '') ?? memberMeals;
+                                            double current = double.tryParse(
+                                                    _memberMealControllers[
+                                                            member.id]
+                                                        ?.text ??
+                                                    '') ??
+                                                memberMeals;
                                             double newCount = current + 0.5;
-                                            _memberMealControllers.putIfAbsent(member.id, () => TextEditingController());
-                                            _memberMealControllers[member.id]!.text = newCount.toStringAsFixed(1);
+                                            _memberMealControllers.putIfAbsent(
+                                                member.id,
+                                                () => TextEditingController());
+                                            _memberMealControllers[member.id]!
+                                                .text = newCount.toStringAsFixed(1);
                                           });
                                         },
                                       ),
                                       const SizedBox(width: 2),
                                       Builder(builder: (context) {
-                                        final currentText = _memberMealControllers[member.id]?.text ?? memberMeals.toStringAsFixed(1);
-                                        final currentVal = double.tryParse(currentText) ?? memberMeals;
-                                        final isChanged = (currentVal - memberMeals).abs() > 0.01;
-                                        
+                                        final currentText =
+                                            _memberMealControllers[member.id]
+                                                    ?.text ??
+                                                memberMeals.toStringAsFixed(1);
+                                        final currentVal =
+                                            double.tryParse(currentText) ??
+                                                memberMeals;
+                                        final isChanged =
+                                            (currentVal - memberMeals).abs() >
+                                                0.01;
+
                                         if (isChanged) {
                                           return IconButton(
-                                            icon: const Icon(Icons.check_circle, color: Colors.green, size: 26),
+                                            icon: const Icon(Icons.check_circle,
+                                                color: Colors.green, size: 26),
                                             visualDensity: VisualDensity.compact,
                                             padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+                                            constraints:
+                                                const BoxConstraints.tightFor(
+                                                    width: 30, height: 30),
                                             onPressed: () {
                                               setState(() {
-                                                final idx = _meals.indexWhere((m) => m.memberId == member.id);
+                                                final idx = _meals.indexWhere(
+                                                    (m) => m.memberId == member.id);
                                                 if (idx != -1) {
                                                   _meals[idx].count = currentVal;
                                                 } else {
-                                                  _meals.add(Meal(memberId: member.id, count: currentVal));
+                                                  _meals.add(Meal(
+                                                      memberId: member.id,
+                                                      count: currentVal));
                                                 }
-                                                _memberMealEditModes[member.id] = false;
+                                                _memberMealEditModes[member.id] =
+                                                    false;
                                               });
                                               _saveState();
-                                              _showSnackBar('${member.name}-এর মিল সেভ করা হয়েছে।', Colors.green);
+                                              _showSnackBar(
+                                                  '${member.name}-এর মিল সেভ করা হয়েছে।',
+                                                  Colors.green);
                                             },
                                           );
                                         }
@@ -2307,9 +2373,11 @@ class _MessManagerPageState extends State<MessManagerPage> {
                       }
 
                       return GestureDetector(
-                        onLongPress: () {
-                          _showExpenseActionDialog(expense);
-                        },
+                        onLongPress: _isManager
+                            ? () {
+                                _showExpenseActionDialog(expense);
+                              }
+                            : null,
                         child: Padding(
                           padding: const EdgeInsets.symmetric(vertical: 5.0),
                           child: Row(
@@ -2354,7 +2422,7 @@ class _MessManagerPageState extends State<MessManagerPage> {
               ),
             ],
           ),
-        ));
+        )));
   }
 
   Widget _buildCollapsibleSection({
