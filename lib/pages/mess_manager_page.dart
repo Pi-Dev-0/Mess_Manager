@@ -114,7 +114,7 @@ class _MessManagerPageState extends State<MessManagerPage> {
     super.initState();
     _loadState().then((_) {
       _checkSetup().then((_) {
-        _checkDailyUpdates();
+        // _checkDailyUpdates();
         // Auto-refresh for mess members on app start
         if (!_isManager && _appsScriptUrl.isNotEmpty) {
           _syncFromGoogleSheets();
@@ -2136,10 +2136,19 @@ class _MessManagerPageState extends State<MessManagerPage> {
                                                     width: 30, height: 30),
                                             onPressed: () {
                                               setState(() {
+                                                final totalBefore = _meals
+                                                    .where((m) =>
+                                                        m.memberId == member.id)
+                                                    .fold(0.0,
+                                                        (sum, m) => sum + m.count);
+                                                final delta =
+                                                    currentVal - totalBefore;
+
                                                 final idx = _meals.indexWhere(
-                                                    (m) => m.memberId == member.id);
+                                                    (m) =>
+                                                        m.memberId == member.id);
                                                 if (idx != -1) {
-                                                  _meals[idx].count = currentVal;
+                                                  _meals[idx].count += delta;
                                                 } else {
                                                   _meals.add(Meal(
                                                       memberId: member.id,
